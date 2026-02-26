@@ -6,21 +6,36 @@ import (
 	"github.com/stripe/stripe-go/v76"
 )
 
-// HandleEvent returns (bountyID, status, handled).
-// status is a store-style string like: "funded".
-func (c *StripeClient) HandleEvent(e stripe.Event) (string, string, bool) {
+type WebhookResult struct {
+	Handled bool
+
+	BountyID     string
+	BountyStatus string
+
+	ConnectedAccountID string
+	AccountOnboarded   *bool
+}
+
+func (c *StripeClient) HandleEvent(e stripe.Event) WebhookResult {
 	switch e.Type {
 	case "checkout.session.completed":
 		var s stripe.CheckoutSession
 		if err := json.Unmarshal(e.Data.Raw, &s); err != nil {
-			return "", "", false
+			return WebhookResult{}
 		}
 		bountyID := ""
 		if s.Metadata != nil {
 			bountyID = s.Metadata["bounty_id"]
 		}
-		return bountyID, "funded", true
+		return WebhookResult{Handled: true, BountyID: bountyID, BountyStatus: "funded"}
+	case "account.updated":
+		var a stripe.Account
+		if err := json.Unmarshal(e.Data.Raw, &a); err != nil {
+			return WebhookResult{}
+		}
+		onboarded := a.ChargesEnabled && a.PayoutsEnabled
+		return WebhookResult{Handled: true, ConnectedAccountID: a.ID, AccountOnboarded: &onboarded}
 	default:
-		return "", "", false
+		return WebhookResult{}
 	}
 }

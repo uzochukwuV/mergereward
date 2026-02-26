@@ -51,6 +51,7 @@ go run ./cmd/server
 ## Endpoints
 
 - `POST /bounties` -> create bounty + Stripe Checkout URL
+- `POST /bounties/claim` -> claim bounty (GitHub OAuth login is source of truth)
 - `POST /developers/stripe/onboard` -> create/reuse Connect Express account + onboarding link
 - `POST /webhooks/github`
 - `POST /webhooks/stripe`

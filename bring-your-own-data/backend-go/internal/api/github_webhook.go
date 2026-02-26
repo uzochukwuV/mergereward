@@ -75,6 +75,26 @@ func (h *Handler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		"bountyStatus": b.Status,
 	}})
 
+	// Source of truth is the GitHub OAuth login that claimed the bounty.
+	// We only forward to CRE if the PR author matches the claimer.
+	if b.ClaimerGitHubLogin == "" {
+		h.hub.Broadcast(ws.Event{Type: "pr.merged.unclaimed", Data: map[string]any{
+			"bountyId": b.ID,
+			"author":  merge.AuthorLogin,
+		}})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "bounty not claimed"})
+		return
+	}
+	if b.ClaimerGitHubLogin != merge.AuthorLogin {
+		h.hub.Broadcast(ws.Event{Type: "pr.merged.claimer_mismatch", Data: map[string]any{
+			"bountyId": b.ID,
+			"claimer":  b.ClaimerGitHubLogin,
+			"author":   merge.AuthorLogin,
+		}})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "claimer mismatch"})
+		return
+	}
+
 	// Forward to CRE HTTP trigger for confidential verification + payout authorization.
 	creClient, err := cre.NewFromEnv()
 	if err == nil {

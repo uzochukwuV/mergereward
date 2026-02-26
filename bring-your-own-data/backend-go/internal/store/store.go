@@ -27,8 +27,10 @@ type Bounty struct {
 	StripeCheckoutID string
 	Status           BountyStatus
 	CreatedAt        time.Time
-	MergedPR         *MergedPR
-	AI              *AIResult
+
+	ClaimerGitHubLogin string
+	MergedPR           *MergedPR
+	AI                 *AIResult
 
 	Payout *Payout
 }
@@ -48,11 +50,11 @@ type AIResult struct {
 }
 
 type Developer struct {
-	GitHubLogin      string
-	StripeAccountID  string
-	StripeOnboarded  bool
-	CreatedAt        time.Time
-	LastOnboardedAt  *time.Time
+	GitHubLogin     string
+	StripeAccountID string
+	StripeOnboarded bool
+	CreatedAt       time.Time
+	LastOnboardedAt *time.Time
 }
 
 type Payout struct {
@@ -143,7 +145,9 @@ func (m *Memory) UpsertDeveloper(d Developer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing, ok := m.developers[d.GitHubLogin]; ok {
-		existing.StripeAccountID = d.StripeAccountID
+		if d.StripeAccountID != "" {
+			existing.StripeAccountID = d.StripeAccountID
+		}
 		existing.StripeOnboarded = d.StripeOnboarded
 		if d.LastOnboardedAt != nil {
 			existing.LastOnboardedAt = d.LastOnboardedAt
@@ -153,11 +157,46 @@ func (m *Memory) UpsertDeveloper(d Developer) {
 	m.developers[d.GitHubLogin] = &d
 }
 
+func (m *Memory) SetDeveloperOnboarded(login string, onboarded bool, at time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.developers[login]
+	if !ok {
+		return
+	}
+	d.StripeOnboarded = onboarded
+	d.LastOnboardedAt = &at
+}
+
+func (m *Memory) SetBountyClaimer(bountyID, githubLogin string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.bounties[bountyID]
+	if !ok {
+		return ErrNotFound
+	}
+	if b.ClaimerGitHubLogin != "" {
+		return errors.New("already claimed")
+	}
+	b.ClaimerGitHubLogin = githubLogin
+	return nil
+}
+
 func (m *Memory) GetDeveloper(login string) (*Developer, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	d, ok := m.developers[login]
 	return d, ok
+}
+
+func (m *Memory) AllDevelopers() []*Developer {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Developer, 0, len(m.developers))
+	for _, d := range m.developers {
+		out = append(out, d)
+	}
+	return out
 }
 
 func (m *Memory) RecordPayout(bountyID string, p Payout) error {

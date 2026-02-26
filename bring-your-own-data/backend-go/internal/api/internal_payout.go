@@ -63,7 +63,7 @@ func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dev, ok := h.store.GetDeveloper(b.MergedPR.Author)
-	if !ok || dev.StripeAccountID == "" {
+	if !ok || dev.StripeAccountID == "" || !dev.StripeOnboarded {
 		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "developer_not_onboarded"})
 		return
 	}
