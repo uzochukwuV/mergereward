@@ -1,0 +1,10 @@
+{
+  "backendURL": "https://api.mergereward.xyz/merged-prs",
+  "evms": [
+    {
+      "mergeRewardAddress": "0xYOUR_DEPLOYED_CONTRACT_ADDRESS",
+      "chainName": "ethereum-testnet-sepolia",
+      "gasLimit": 200000
+    }
+  ]
+}

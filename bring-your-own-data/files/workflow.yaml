@@ -1,0 +1,19 @@
+# ==========================================================================
+# MergeReward — CRE Workflow Settings
+# ==========================================================================
+
+staging-settings:
+  user-workflow:
+    workflow-name: "merge-reward"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.json"
+    secrets-path: "./secrets.yaml"
+
+production-settings:
+  user-workflow:
+    workflow-name: "merge-reward"
+  workflow-artifacts:
+    workflow-path: "."
+    config-path: "./config.json"
+    secrets-path: "./secrets.yaml"
