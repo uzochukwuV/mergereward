@@ -19,16 +19,18 @@ const (
 )
 
 type Bounty struct {
-	ID              string
-	RepoID          string
-	IssueNumber     int
-	AmountCents     int64
-	Currency        string
+	ID               string
+	RepoID           string
+	IssueNumber      int
+	AmountCents      int64
+	Currency         string
 	StripeCheckoutID string
-	Status          BountyStatus
-	CreatedAt       time.Time
-	MergedPR        *MergedPR
-	AI             *AIResult
+	Status           BountyStatus
+	CreatedAt        time.Time
+	MergedPR         *MergedPR
+	AI              *AIResult
+
+	Payout *Payout
 }
 
 type MergedPR struct {
@@ -45,13 +47,27 @@ type AIResult struct {
 	Summary string
 }
 
+type Developer struct {
+	GitHubLogin      string
+	StripeAccountID  string
+	StripeOnboarded  bool
+	CreatedAt        time.Time
+	LastOnboardedAt  *time.Time
+}
+
+type Payout struct {
+	StripeTransferID string
+	CreatedAt        time.Time
+}
+
 type Memory struct {
-	mu      sync.RWMutex
-	bounties map[string]*Bounty
+	mu         sync.RWMutex
+	bounties   map[string]*Bounty
+	developers map[string]*Developer // key: github login
 }
 
 func NewMemory() *Memory {
-	return &Memory{bounties: map[string]*Bounty{}}
+	return &Memory{bounties: map[string]*Bounty{}, developers: map[string]*Developer{}}
 }
 
 func (m *Memory) CreateBounty(b *Bounty) {
@@ -94,6 +110,13 @@ func (m *Memory) FindBountyByRepoIssue(repoID string, issueNumber int) (*Bounty,
 	return nil, false
 }
 
+func (m *Memory) GetBounty(bountyID string) (*Bounty, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	b, ok := m.bounties[bountyID]
+	return b, ok
+}
+
 func (m *Memory) RecordPRMerge(bountyID string, pr MergedPR) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -113,6 +136,39 @@ func (m *Memory) SetAIResult(bountyID string, res AIResult) error {
 		return ErrNotFound
 	}
 	b.AI = &res
+	return nil
+}
+
+func (m *Memory) UpsertDeveloper(d Developer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.developers[d.GitHubLogin]; ok {
+		existing.StripeAccountID = d.StripeAccountID
+		existing.StripeOnboarded = d.StripeOnboarded
+		if d.LastOnboardedAt != nil {
+			existing.LastOnboardedAt = d.LastOnboardedAt
+		}
+		return
+	}
+	m.developers[d.GitHubLogin] = &d
+}
+
+func (m *Memory) GetDeveloper(login string) (*Developer, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	d, ok := m.developers[login]
+	return d, ok
+}
+
+func (m *Memory) RecordPayout(bountyID string, p Payout) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.bounties[bountyID]
+	if !ok {
+		return ErrNotFound
+	}
+	b.Payout = &p
+	b.Status = BountyStatusPaid
 	return nil
 }
 

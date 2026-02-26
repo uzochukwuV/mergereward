@@ -37,6 +37,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /webhooks/stripe", h.handleStripeWebhook)
 
 	mux.HandleFunc("POST /bounties", h.handleCreateBounty)
+	mux.HandleFunc("POST /developers/stripe/onboard", h.handleDeveloperStripeOnboard)
+
+	// Called by CRE (Confidential HTTP) after verifying the merge.
+	mux.HandleFunc("POST /internal/payout", h.handleInternalPayout)
 
 	return mux
 }

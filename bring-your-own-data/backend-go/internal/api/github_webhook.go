@@ -2,9 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"mergereward-backend/internal/ai"
+	"mergereward-backend/internal/cre"
 	"mergereward-backend/internal/github"
 	"mergereward-backend/internal/store"
 	"mergereward-backend/internal/ws"
@@ -72,6 +74,27 @@ func (h *Handler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		"mergedAt":     merge.MergedAt,
 		"bountyStatus": b.Status,
 	}})
+
+	// Forward to CRE HTTP trigger for confidential verification + payout authorization.
+	creClient, err := cre.NewFromEnv()
+	if err == nil {
+		resp, err := creClient.PostMergeEvent(cre.MergeEvent{
+			BountyID:       b.ID,
+			RepoID:         merge.RepoFullName,
+			IssueNumber:    issueNumber,
+			PRNumber:       merge.Number,
+			DeveloperGitHub: merge.AuthorLogin,
+		})
+		if err != nil {
+			h.hub.Broadcast(ws.Event{Type: "cre.error", Data: map[string]any{"bountyId": b.ID, "error": err.Error()}})
+		} else {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			h.hub.Broadcast(ws.Event{Type: "cre.forwarded", Data: map[string]any{"bountyId": b.ID, "status": resp.StatusCode}})
+		}
+	} else {
+		h.hub.Broadcast(ws.Event{Type: "cre.config_missing", Data: map[string]any{"bountyId": b.ID, "error": err.Error()}})
+	}
 
 	if ai.Enabled() {
 		go func() {
