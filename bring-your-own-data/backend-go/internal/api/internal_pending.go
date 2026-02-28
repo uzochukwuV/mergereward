@@ -4,8 +4,6 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"os"
-
-	"mergereward-backend/internal/store"
 )
 
 // pendingPayoutEvent is a single pending merge event returned to the CRE workflow.
