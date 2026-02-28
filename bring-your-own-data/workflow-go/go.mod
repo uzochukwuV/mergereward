@@ -2,8 +2,6 @@ module cre-por-go
 
 go 1.24.5
 
-toolchain go1.24.9
-
 require (
 	github.com/ethereum/go-ethereum v1.16.4
 	github.com/shopspring/decimal v1.4.0
