@@ -199,6 +199,20 @@ func (m *Memory) AllDevelopers() []*Developer {
 	return out
 }
 
+// PendingPayouts returns bounties that are funded + merged but not yet paid out.
+// Called by GET /internal/pending-payouts so the CRE workflow can poll for work.
+func (m *Memory) PendingPayouts() []*Bounty {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*Bounty
+	for _, b := range m.bounties {
+		if b.Status == BountyStatusFunded && b.MergedPR != nil && b.Payout == nil {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func (m *Memory) RecordPayout(bountyID string, p Payout) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -1,0 +1,5 @@
+{
+  "schedule": "*/1 * * * *",
+  "backendURL": "https://your-backend.example.com",
+  "githubAPIURL": "https://api.github.com"
+}

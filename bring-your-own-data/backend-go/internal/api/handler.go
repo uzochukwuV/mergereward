@@ -43,6 +43,10 @@ func (h *Handler) Routes() http.Handler {
 	// Called by CRE (Confidential HTTP) after verifying the merge.
 	mux.HandleFunc("POST /internal/payout", h.handleInternalPayout)
 
+	// Called by the CRE workflow on each cron tick to fetch pending merge events.
+	// CRE independently verifies each via GitHub API before triggering payouts.
+	mux.HandleFunc("GET /internal/pending-payouts", h.handleInternalPendingPayouts)
+
 	return mux
 }
 
