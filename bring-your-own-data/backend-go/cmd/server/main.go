@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mergereward-backend/internal/api"
+	"mergereward-backend/internal/db"
 	"mergereward-backend/internal/store"
 	"mergereward-backend/internal/ws"
 )
@@ -17,13 +18,37 @@ import (
 func main() {
 	addr := envOr("ADDR", ":8080")
 
-	st := store.NewMemory()
+	// ── Store ─────────────────────────────────────────────────────────────────
+	// Use Postgres when DATABASE_URL is set; fall back to in-memory.
+	var st store.Store
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		pg, err := db.Open(dsn)
+		if err != nil {
+			log.Fatalf("postgres connect: %v", err)
+		}
+		defer pg.Close()
+		st = pg
+		log.Printf("store: postgres (%s)", maskDSN(dsn))
+	} else {
+		st = store.NewMemory()
+		log.Printf("store: in-memory (set DATABASE_URL to use postgres)")
+	}
+
+	// ── Session secret ────────────────────────────────────────────────────────
+	secret := os.Getenv("SESSION_SECRET")
+	if secret == "" {
+		log.Printf("warning: SESSION_SECRET not set; GitHub OAuth sessions will not work")
+	}
+
+	// ── WebSocket hub ─────────────────────────────────────────────────────────
 	hub := ws.NewHub()
 	go hub.Run()
 
+	// ── HTTP server ───────────────────────────────────────────────────────────
 	h := api.NewHandler(api.Deps{
-		Store: st,
-		Hub:   hub,
+		Store:         st,
+		Hub:           hub,
+		SessionSecret: secret,
 	})
 
 	srv := &http.Server{
@@ -53,4 +78,12 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// maskDSN hides the password in a DSN for logging.
+func maskDSN(dsn string) string {
+	if len(dsn) > 30 {
+		return dsn[:30] + "..."
+	}
+	return dsn
 }

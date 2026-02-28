@@ -31,8 +31,7 @@ type Bounty struct {
 	ClaimerGitHubLogin string
 	MergedPR           *MergedPR
 	AI                 *AIResult
-
-	Payout *Payout
+	Payout             *Payout
 }
 
 type MergedPR struct {
@@ -62,14 +61,37 @@ type Payout struct {
 	CreatedAt        time.Time
 }
 
+// Store is satisfied by both Memory and db.Postgres.
+type Store interface {
+	CreateBounty(b *Bounty)
+	AttachStripeCheckout(bountyID, checkoutID string) error
+	SetBountyStatus(bountyID string, st BountyStatus) error
+	FindBountyByRepoIssue(repoID string, issueNumber int) (*Bounty, bool)
+	GetBounty(bountyID string) (*Bounty, bool)
+	RecordPRMerge(bountyID string, pr MergedPR) error
+	SetAIResult(bountyID string, res AIResult) error
+	UpsertDeveloper(d Developer)
+	SetDeveloperOnboarded(login string, onboarded bool, at time.Time)
+	SetBountyClaimer(bountyID, githubLogin string) error
+	GetDeveloper(login string) (*Developer, bool)
+	AllDevelopers() []*Developer
+	RecordPayout(bountyID string, p Payout) error
+	PendingPayouts() []*Bounty
+}
+
+// ─── In-memory store ─────────────────────────────────────────────────────────
+
 type Memory struct {
 	mu         sync.RWMutex
 	bounties   map[string]*Bounty
-	developers map[string]*Developer // key: github login
+	developers map[string]*Developer
 }
 
 func NewMemory() *Memory {
-	return &Memory{bounties: map[string]*Bounty{}, developers: map[string]*Developer{}}
+	return &Memory{
+		bounties:   map[string]*Bounty{},
+		developers: map[string]*Developer{},
+	}
 }
 
 func (m *Memory) CreateBounty(b *Bounty) {
@@ -199,8 +221,6 @@ func (m *Memory) AllDevelopers() []*Developer {
 	return out
 }
 
-// PendingPayouts returns bounties that are funded + merged but not yet paid out.
-// Called by GET /internal/pending-payouts so the CRE workflow can poll for work.
 func (m *Memory) PendingPayouts() []*Bounty {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 
+	"mergereward-backend/internal/auth"
 	"mergereward-backend/internal/github"
 	"mergereward-backend/internal/payments"
 	"mergereward-backend/internal/store"
@@ -11,17 +13,23 @@ import (
 )
 
 type Deps struct {
-	Store *store.Memory
-	Hub   *ws.Hub
+	Store         store.Store
+	Hub           *ws.Hub
+	SessionSecret string
 }
 
 type Handler struct {
-	store *store.Memory
-	hub   *ws.Hub
+	store         store.Store
+	hub           *ws.Hub
+	sessionSecret string
 }
 
 func NewHandler(d Deps) *Handler {
-	return &Handler{store: d.Store, hub: d.Hub}
+	return &Handler{
+		store:         d.Store,
+		hub:           d.Hub,
+		sessionSecret: d.SessionSecret,
+	}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -32,19 +40,32 @@ func (h *Handler) Routes() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// ── Auth ──────────────────────────────────────────────────────────────────
+	mux.HandleFunc("GET /auth/github", h.handleAuthGitHub)
+	mux.HandleFunc("GET /auth/github/callback", h.handleAuthGitHubCallback)
+	mux.Handle("GET /auth/me",
+		auth.InjectAuth(h.sessionSecret)(http.HandlerFunc(h.handleAuthMe)))
+	mux.HandleFunc("POST /auth/logout", h.handleAuthLogout)
+
+	// ── Real-time ─────────────────────────────────────────────────────────────
 	mux.HandleFunc("GET /ws", h.handleWS)
+
+	// ── Webhooks ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("POST /webhooks/github", h.handleGitHubWebhook)
 	mux.HandleFunc("POST /webhooks/stripe", h.handleStripeWebhook)
 
+	// ── Bounties ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("POST /bounties", h.handleCreateBounty)
-	mux.HandleFunc("POST /bounties/claim", h.handleClaimBounty)
+
+	// Claim requires a valid GitHub session; the handler reads login from context.
+	mux.Handle("POST /bounties/claim",
+		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleClaimBounty)))
+
+	// ── Developers ────────────────────────────────────────────────────────────
 	mux.HandleFunc("POST /developers/stripe/onboard", h.handleDeveloperStripeOnboard)
 
-	// Called by CRE (Confidential HTTP) after verifying the merge.
+	// ── Internal (CRE-only, bearer-token protected) ────────────────────────────
 	mux.HandleFunc("POST /internal/payout", h.handleInternalPayout)
-
-	// Called by the CRE workflow on each cron tick to fetch pending merge events.
-	// CRE independently verifies each via GitHub API before triggering payouts.
 	mux.HandleFunc("GET /internal/pending-payouts", h.handleInternalPendingPayouts)
 
 	return mux
@@ -62,4 +83,11 @@ func (h *Handler) stripeClient() (*payments.StripeClient, error) {
 
 func (h *Handler) githubVerifier() *github.WebhookVerifier {
 	return github.NewWebhookVerifierFromEnv()
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
