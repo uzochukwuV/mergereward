@@ -189,13 +189,25 @@ func (p *Postgres) SetAIResult(bountyID string, res store.AIResult) error {
 
 func (p *Postgres) UpsertDeveloper(d store.Developer) {
 	_, _ = p.db.Exec(
-		`INSERT INTO developers (github_login, stripe_account_id, stripe_onboarded, created_at)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO developers (github_login, stripe_account_id, stripe_onboarded, wallet_address, created_at)
+		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (github_login) DO UPDATE
 		   SET stripe_account_id = COALESCE(NULLIF(EXCLUDED.stripe_account_id,''), developers.stripe_account_id),
-		       stripe_onboarded  = EXCLUDED.stripe_onboarded`,
-		d.GitHubLogin, d.StripeAccountID, d.StripeOnboarded, d.CreatedAt,
+		       stripe_onboarded  = EXCLUDED.stripe_onboarded,
+		       wallet_address    = COALESCE(NULLIF(EXCLUDED.wallet_address,''), developers.wallet_address)`,
+		d.GitHubLogin, d.StripeAccountID, d.StripeOnboarded, d.WalletAddress, d.CreatedAt,
 	)
+}
+
+func (p *Postgres) SetDeveloperWallet(login, walletAddress string) error {
+	res, err := p.db.Exec(
+		`UPDATE developers SET wallet_address = $1 WHERE github_login = $2`,
+		walletAddress, login,
+	)
+	if err != nil {
+		return err
+	}
+	return expectOne(res)
 }
 
 func (p *Postgres) SetDeveloperOnboarded(login string, onboarded bool, at time.Time) {
@@ -233,14 +245,16 @@ func (p *Postgres) GetDeveloper(login string) (*store.Developer, bool) {
 	var d store.Developer
 	var acctID sql.NullString
 	var lastAt sql.NullTime
+	var walletAddr sql.NullString
 	err := p.db.QueryRow(
-		`SELECT github_login, stripe_account_id, stripe_onboarded, created_at, last_onboarded_at
+		`SELECT github_login, stripe_account_id, stripe_onboarded, wallet_address, created_at, last_onboarded_at
 		 FROM developers WHERE github_login = $1`, login,
-	).Scan(&d.GitHubLogin, &acctID, &d.StripeOnboarded, &d.CreatedAt, &lastAt)
+	).Scan(&d.GitHubLogin, &acctID, &d.StripeOnboarded, &walletAddr, &d.CreatedAt, &lastAt)
 	if err != nil {
 		return nil, false
 	}
 	d.StripeAccountID = acctID.String
+	d.WalletAddress = walletAddr.String
 	if lastAt.Valid {
 		d.LastOnboardedAt = &lastAt.Time
 	}
@@ -249,7 +263,7 @@ func (p *Postgres) GetDeveloper(login string) (*store.Developer, bool) {
 
 func (p *Postgres) AllDevelopers() []*store.Developer {
 	rows, err := p.db.Query(
-		`SELECT github_login, stripe_account_id, stripe_onboarded, created_at, last_onboarded_at FROM developers`,
+		`SELECT github_login, stripe_account_id, stripe_onboarded, wallet_address, created_at, last_onboarded_at FROM developers`,
 	)
 	if err != nil {
 		return nil
@@ -259,11 +273,13 @@ func (p *Postgres) AllDevelopers() []*store.Developer {
 	for rows.Next() {
 		var d store.Developer
 		var acctID sql.NullString
+		var walletAddr sql.NullString
 		var lastAt sql.NullTime
-		if err := rows.Scan(&d.GitHubLogin, &acctID, &d.StripeOnboarded, &d.CreatedAt, &lastAt); err != nil {
+		if err := rows.Scan(&d.GitHubLogin, &acctID, &d.StripeOnboarded, &walletAddr, &d.CreatedAt, &lastAt); err != nil {
 			continue
 		}
 		d.StripeAccountID = acctID.String
+		d.WalletAddress = walletAddr.String
 		if lastAt.Valid {
 			d.LastOnboardedAt = &lastAt.Time
 		}

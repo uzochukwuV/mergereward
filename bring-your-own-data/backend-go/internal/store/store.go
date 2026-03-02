@@ -52,6 +52,7 @@ type Developer struct {
 	GitHubLogin     string
 	StripeAccountID string
 	StripeOnboarded bool
+	WalletAddress   string     // EVM wallet address for on-chain payouts
 	CreatedAt       time.Time
 	LastOnboardedAt *time.Time
 }
@@ -72,6 +73,7 @@ type Store interface {
 	SetAIResult(bountyID string, res AIResult) error
 	UpsertDeveloper(d Developer)
 	SetDeveloperOnboarded(login string, onboarded bool, at time.Time)
+	SetDeveloperWallet(login, walletAddress string) error
 	SetBountyClaimer(bountyID, githubLogin string) error
 	GetDeveloper(login string) (*Developer, bool)
 	AllDevelopers() []*Developer
@@ -174,9 +176,23 @@ func (m *Memory) UpsertDeveloper(d Developer) {
 		if d.LastOnboardedAt != nil {
 			existing.LastOnboardedAt = d.LastOnboardedAt
 		}
+		if d.WalletAddress != "" {
+			existing.WalletAddress = d.WalletAddress
+		}
 		return
 	}
 	m.developers[d.GitHubLogin] = &d
+}
+
+func (m *Memory) SetDeveloperWallet(login, walletAddress string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	d, ok := m.developers[login]
+	if !ok {
+		return ErrNotFound
+	}
+	d.WalletAddress = walletAddress
+	return nil
 }
 
 func (m *Memory) SetDeveloperOnboarded(login string, onboarded bool, at time.Time) {

@@ -19,6 +19,7 @@ type internalPayoutRequest struct {
 type internalPayoutResponse struct {
 	Status           string `json:"status"`
 	StripeTransferID string `json:"stripeTransferId,omitempty"`
+	PaymentMode      string `json:"paymentMode"` // "stripe" | "onchain"
 }
 
 func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
@@ -58,13 +59,41 @@ func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.Payout != nil {
-		writeJSON(w, http.StatusOK, internalPayoutResponse{Status: "already_paid", StripeTransferID: b.Payout.StripeTransferID})
+		writeJSON(w, http.StatusOK, internalPayoutResponse{
+			Status:           "already_paid",
+			StripeTransferID: b.Payout.StripeTransferID,
+			PaymentMode:      paymentMode(),
+		})
 		return
 	}
 
+	// ── On-chain path (Stripe not configured) ────────────────────────────────
+	// The CRE workflow calls `releaseBounty` directly on the smart contract.
+	// Funds accumulate in `developerBalances[developer]` inside the contract;
+	// the developer calls `withdraw()` at their convenience — one tx, any total.
+	if !payments.ConnectEnabled() {
+		developer := b.MergedPR.Author
+		_ = h.store.RecordPayout(b.ID, store.Payout{
+			StripeTransferID: "", // no Stripe — on-chain balance held by contract
+			CreatedAt:        time.Now().UTC(),
+		})
+
+		h.hub.Broadcast(ws.Event{Type: "bounty.paid", Data: map[string]any{
+			"bountyId":    b.ID,
+			"developer":   developer,
+			"amountCents": b.AmountCents,
+			"currency":    b.Currency,
+			"paymentMode": "onchain",
+		}})
+
+		writeJSON(w, http.StatusOK, internalPayoutResponse{Status: "paid", PaymentMode: "onchain"})
+		return
+	}
+
+	// ── Stripe path ───────────────────────────────────────────────────────────
 	dev, ok := h.store.GetDeveloper(b.MergedPR.Author)
 	if !ok || dev.StripeAccountID == "" || !dev.StripeOnboarded {
-		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "developer_not_onboarded"})
+		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "developer_not_onboarded", PaymentMode: "stripe"})
 		return
 	}
 
@@ -98,7 +127,16 @@ func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
 		"amountCents":      payoutAmount,
 		"currency":         b.Currency,
 		"feeCents":         fee,
+		"paymentMode":      "stripe",
 	}})
 
-	writeJSON(w, http.StatusOK, internalPayoutResponse{Status: "paid", StripeTransferID: transferID})
+	writeJSON(w, http.StatusOK, internalPayoutResponse{Status: "paid", StripeTransferID: transferID, PaymentMode: "stripe"})
+}
+
+// paymentMode returns "stripe" when Stripe is configured, otherwise "onchain".
+func paymentMode() string {
+	if payments.ConnectEnabled() {
+		return "stripe"
+	}
+	return "onchain"
 }
