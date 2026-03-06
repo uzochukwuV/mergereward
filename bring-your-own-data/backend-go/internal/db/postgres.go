@@ -44,7 +44,7 @@ func (p *Postgres) Close() error { return p.db.Close() }
 // scanBounty assembles a full *store.Bounty from a row returned by bountyQuery.
 func scanBounty(row *sql.Row) (*store.Bounty, error) {
 	var b store.Bounty
-	var checkoutID, claimer sql.NullString
+	var checkoutID, creator, claimer, fundTxHash sql.NullString
 
 	// merged_pr columns
 	var mpRepoID, mpSHA, mpAuthor, mpBody sql.NullString
@@ -61,7 +61,7 @@ func scanBounty(row *sql.Row) (*store.Bounty, error) {
 
 	err := row.Scan(
 		&b.ID, &b.RepoID, &b.IssueNumber, &b.AmountCents, &b.Currency,
-		&checkoutID, &b.Status, &claimer, &b.CreatedAt,
+		&checkoutID, &b.Status, &creator, &claimer, &fundTxHash, &b.CreatedAt,
 		&mpRepoID, &mpPRNumber, &mpSHA, &mpAuthor, &mpMergedAt, &mpBody,
 		&aiScore, &aiSummary,
 		&payTransferID, &payCreatedAt,
@@ -70,7 +70,9 @@ func scanBounty(row *sql.Row) (*store.Bounty, error) {
 		return nil, err
 	}
 	b.StripeCheckoutID = checkoutID.String
+	b.CreatorGitHubLogin = creator.String
 	b.ClaimerGitHubLogin = claimer.String
+	b.FundTxHash = fundTxHash.String
 
 	if mpRepoID.Valid {
 		b.MergedPR = &store.MergedPR{
@@ -100,7 +102,7 @@ func scanBounty(row *sql.Row) (*store.Bounty, error) {
 const bountySelectSQL = `
 SELECT
     b.id, b.repo_id, b.issue_number, b.amount_cents, b.currency,
-    b.stripe_checkout_id, b.status, b.claimer_github_login, b.created_at,
+    b.stripe_checkout_id, b.status, b.creator_github_login, b.claimer_github_login, b.fund_tx_hash, b.created_at,
     m.repo_id,    m.pr_number, m.sha, m.author, m.merged_at, m.body,
     a.score,      a.summary,
     p.stripe_transfer_id, p.created_at
@@ -114,11 +116,22 @@ LEFT JOIN payouts     p ON p.bounty_id = b.id`
 func (p *Postgres) CreateBounty(b *store.Bounty) {
 	b.ID = newID("bty")
 	_, _ = p.db.Exec(
-		`INSERT INTO bounties (id, repo_id, issue_number, amount_cents, currency, status, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		`INSERT INTO bounties (id, repo_id, issue_number, amount_cents, currency, status, creator_github_login, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		b.ID, b.RepoID, b.IssueNumber, b.AmountCents, b.Currency,
-		string(b.Status), b.CreatedAt,
+		string(b.Status), b.CreatorGitHubLogin, b.CreatedAt,
 	)
+}
+
+func (p *Postgres) SetFundTxHash(bountyID, txHash string) error {
+	res, err := p.db.Exec(
+		`UPDATE bounties SET fund_tx_hash = $1 WHERE id = $2`,
+		txHash, bountyID,
+	)
+	if err != nil {
+		return err
+	}
+	return expectOne(res)
 }
 
 func (p *Postgres) AttachStripeCheckout(bountyID, checkoutID string) error {
@@ -338,7 +351,7 @@ func (p *Postgres) PendingPayouts() []*store.Bounty {
 // scanBountyRow scans from *sql.Rows (for multi-row queries).
 func scanBountyRow(rows *sql.Rows) (*store.Bounty, error) {
 	var b store.Bounty
-	var checkoutID, claimer sql.NullString
+	var checkoutID, creator, claimer, fundTxHash sql.NullString
 	var mpRepoID, mpSHA, mpAuthor, mpBody sql.NullString
 	var mpPRNumber sql.NullInt32
 	var mpMergedAt sql.NullTime
@@ -349,7 +362,7 @@ func scanBountyRow(rows *sql.Rows) (*store.Bounty, error) {
 
 	err := rows.Scan(
 		&b.ID, &b.RepoID, &b.IssueNumber, &b.AmountCents, &b.Currency,
-		&checkoutID, &b.Status, &claimer, &b.CreatedAt,
+		&checkoutID, &b.Status, &creator, &claimer, &fundTxHash, &b.CreatedAt,
 		&mpRepoID, &mpPRNumber, &mpSHA, &mpAuthor, &mpMergedAt, &mpBody,
 		&aiScore, &aiSummary,
 		&payTransferID, &payCreatedAt,
@@ -358,7 +371,9 @@ func scanBountyRow(rows *sql.Rows) (*store.Bounty, error) {
 		return nil, err
 	}
 	b.StripeCheckoutID = checkoutID.String
+	b.CreatorGitHubLogin = creator.String
 	b.ClaimerGitHubLogin = claimer.String
+	b.FundTxHash = fundTxHash.String
 	if mpRepoID.Valid {
 		b.MergedPR = &store.MergedPR{
 			RepoID:   mpRepoID.String,

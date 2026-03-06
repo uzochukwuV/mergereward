@@ -55,7 +55,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("POST /webhooks/stripe", h.handleStripeWebhook)
 
 	// ── Bounties ──────────────────────────────────────────────────────────────
-	mux.HandleFunc("POST /bounties", h.handleCreateBounty)
+	// Auth required so we can record the creator for ownership checks on fund-onchain.
+	mux.Handle("POST /bounties",
+		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleCreateBounty)))
 	mux.HandleFunc("GET /bounties", h.handleListBounties)
 	mux.HandleFunc("GET /bounties/{id}", h.handleGetBounty)
 

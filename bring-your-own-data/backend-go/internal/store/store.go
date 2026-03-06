@@ -32,7 +32,9 @@ type Bounty struct {
 	Status           BountyStatus
 	CreatedAt        time.Time
 
+	CreatorGitHubLogin string
 	ClaimerGitHubLogin string
+	FundTxHash         string // on-chain tx hash from handleFundOnchain
 	MergedPR           *MergedPR
 	AI                 *AIResult
 	Payout             *Payout
@@ -79,6 +81,7 @@ type Store interface {
 	SetDeveloperOnboarded(login string, onboarded bool, at time.Time)
 	SetDeveloperWallet(login, walletAddress string) error
 	SetBountyClaimer(bountyID, githubLogin string) error
+	SetFundTxHash(bountyID, txHash string) error
 	GetDeveloper(login string) (*Developer, bool)
 	AllDevelopers() []*Developer
 	RecordPayout(bountyID string, p Payout) error
@@ -208,6 +211,17 @@ func (m *Memory) SetDeveloperOnboarded(login string, onboarded bool, at time.Tim
 	}
 	d.StripeOnboarded = onboarded
 	d.LastOnboardedAt = &at
+}
+
+func (m *Memory) SetFundTxHash(bountyID, txHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.bounties[bountyID]
+	if !ok {
+		return ErrNotFound
+	}
+	b.FundTxHash = txHash
+	return nil
 }
 
 func (m *Memory) SetBountyClaimer(bountyID, githubLogin string) error {

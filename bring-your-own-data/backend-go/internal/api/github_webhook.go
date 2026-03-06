@@ -112,6 +112,7 @@ func (h *Handler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 			PRNumber:        merge.Number,
 			DeveloperGitHub: merge.AuthorLogin,
 			DeveloperWallet: developerWallet,
+			PaymentMode:     paymentMode(),
 		})
 		if err != nil {
 			h.hub.Broadcast(ws.Event{Type: "cre.error", Data: map[string]any{"bountyId": b.ID, "error": err.Error()}})

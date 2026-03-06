@@ -24,8 +24,11 @@ type MergeEvent struct {
 	// PATCH /developers/me/wallet. The CRE workflow passes this to
 	// releaseBounty(bountyId, developerWallet) on the smart contract.
 	// Empty string when no wallet is registered; workflow should abort the
-	// EVM write and surface an error in that case.
+	// EVM write only in onchain mode.
 	DeveloperWallet string `json:"developerWallet"`
+	// PaymentMode is "stripe" or "onchain". Determines whether the CRE workflow
+	// should attempt an EVM write (onchain) or just notify the backend (stripe).
+	PaymentMode string `json:"paymentMode"`
 }
 
 func NewFromEnv() (*Client, error) {

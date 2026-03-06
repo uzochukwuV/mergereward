@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 	"mergereward-backend/internal/store"
 	"mergereward-backend/internal/ws"
 )
+
+// txHashRE matches a 0x-prefixed 64-hex-character EVM transaction hash.
+var txHashRE = regexp.MustCompile(`^0x[0-9a-fA-F]{64}$`)
 
 type createBountyRequest struct {
 	RepoID      string `json:"repoId"`
@@ -31,6 +35,12 @@ type createBountyResponse struct {
 }
 
 func (h *Handler) handleCreateBounty(w http.ResponseWriter, r *http.Request) {
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		return
+	}
+
 	var req createBountyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -42,12 +52,13 @@ func (h *Handler) handleCreateBounty(w http.ResponseWriter, r *http.Request) {
 	}
 
 	b := &store.Bounty{
-		RepoID:      req.RepoID,
-		IssueNumber: req.IssueNumber,
-		AmountCents: req.AmountCents,
-		Currency:    req.Currency,
-		CreatedAt:   time.Now().UTC(),
-		Status:      store.BountyStatusPendingPayment,
+		RepoID:             req.RepoID,
+		IssueNumber:        req.IssueNumber,
+		AmountCents:        req.AmountCents,
+		Currency:           req.Currency,
+		CreatedAt:          time.Now().UTC(),
+		Status:             store.BountyStatusPendingPayment,
+		CreatorGitHubLogin: claims.GitHubLogin,
 	}
 	h.store.CreateBounty(b)
 
@@ -152,8 +163,8 @@ func (h *Handler) handleFundOnchain(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
-	if req.TxHash == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txHash is required"})
+	if !txHashRE.MatchString(req.TxHash) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txHash must be a 0x-prefixed 64-hex-character transaction hash"})
 		return
 	}
 
@@ -162,6 +173,13 @@ func (h *Handler) handleFundOnchain(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bounty not found"})
 		return
 	}
+
+	// Only the bounty creator may confirm on-chain funding.
+	if b.CreatorGitHubLogin != claims.GitHubLogin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only the bounty creator may confirm on-chain funding"})
+		return
+	}
+
 	if b.Status != store.BountyStatusPendingOnchain {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":  "bounty is not awaiting on-chain funding",
@@ -170,6 +188,10 @@ func (h *Handler) handleFundOnchain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.store.SetFundTxHash(id, req.TxHash); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record fund tx hash: " + err.Error()})
+		return
+	}
 	if err := h.store.SetBountyStatus(id, store.BountyStatusFunded); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to mark bounty as funded: " + err.Error()})
 		return
@@ -210,8 +232,8 @@ func (h *Handler) handleConfirmReleased(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
-	if req.TxHash == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txHash is required"})
+	if !txHashRE.MatchString(req.TxHash) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txHash must be a 0x-prefixed 64-hex-character transaction hash"})
 		return
 	}
 
@@ -220,6 +242,13 @@ func (h *Handler) handleConfirmReleased(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bounty not found"})
 		return
 	}
+
+	// Only the developer who claimed the bounty may confirm the on-chain release.
+	if b.ClaimerGitHubLogin == "" || b.ClaimerGitHubLogin != claims.GitHubLogin {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "only the bounty claimer may confirm on-chain release"})
+		return
+	}
+
 	if b.Status != store.BountyStatusFunded {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error":  "bounty is not in funded state",
@@ -231,8 +260,13 @@ func (h *Handler) handleConfirmReleased(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "no merged PR recorded for this bounty"})
 		return
 	}
+	// Idempotent: if already confirmed with the same txHash, return success.
 	if b.Payout != nil {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "already_confirmed"})
+		if b.Payout.StripeTransferID == req.TxHash {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "already_confirmed"})
+		} else {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "bounty already confirmed with a different transaction hash"})
+		}
 		return
 	}
 
