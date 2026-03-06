@@ -96,14 +96,22 @@ func (h *Handler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward to CRE HTTP trigger for confidential verification + payout authorization.
+	// Include the developer's registered EVM wallet address so the CRE workflow
+	// can pass it to releaseBounty(bountyId, developerWallet) on the contract.
+	var developerWallet string
+	if dev, ok := h.store.GetDeveloper(b.ClaimerGitHubLogin); ok {
+		developerWallet = dev.WalletAddress
+	}
+
 	creClient, err := cre.NewFromEnv()
 	if err == nil {
 		resp, err := creClient.PostMergeEvent(cre.MergeEvent{
-			BountyID:       b.ID,
-			RepoID:         merge.RepoFullName,
-			IssueNumber:    issueNumber,
-			PRNumber:       merge.Number,
+			BountyID:        b.ID,
+			RepoID:          merge.RepoFullName,
+			IssueNumber:     issueNumber,
+			PRNumber:        merge.Number,
 			DeveloperGitHub: merge.AuthorLogin,
+			DeveloperWallet: developerWallet,
 		})
 		if err != nil {
 			h.hub.Broadcast(ws.Event{Type: "cre.error", Data: map[string]any{"bountyId": b.ID, "error": err.Error()}})

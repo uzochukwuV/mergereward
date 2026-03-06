@@ -49,9 +49,13 @@ CREATE TABLE IF NOT EXISTS ai_results (
 
 CREATE TABLE IF NOT EXISTS payouts (
     bounty_id          TEXT        PRIMARY KEY REFERENCES bounties (id),
-    stripe_transfer_id TEXT        NOT NULL,
+    -- Stripe transfer ID (stripe mode) or on-chain tx hash (onchain mode). Nullable.
+    stripe_transfer_id TEXT,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Idempotent: relax NOT NULL added in earlier schema version.
+ALTER TABLE payouts ALTER COLUMN stripe_transfer_id DROP NOT NULL;
 `
 
 // Migrate applies the schema to the database. Safe to call on every startup.

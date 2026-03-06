@@ -15,11 +15,17 @@ type Client struct {
 }
 
 type MergeEvent struct {
-	BountyID     string `json:"bountyId"`
-	RepoID       string `json:"repoId"`
-	IssueNumber  int    `json:"issueNumber"`
-	PRNumber     int    `json:"prNumber"`
+	BountyID        string `json:"bountyId"`
+	RepoID          string `json:"repoId"`
+	IssueNumber     int    `json:"issueNumber"`
+	PRNumber        int    `json:"prNumber"`
 	DeveloperGitHub string `json:"developerGitHub"`
+	// DeveloperWallet is the EVM address the developer registered via
+	// PATCH /developers/me/wallet. The CRE workflow passes this to
+	// releaseBounty(bountyId, developerWallet) on the smart contract.
+	// Empty string when no wallet is registered; workflow should abort the
+	// EVM write and surface an error in that case.
+	DeveloperWallet string `json:"developerWallet"`
 }
 
 func NewFromEnv() (*Client, error) {

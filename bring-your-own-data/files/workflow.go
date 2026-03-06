@@ -27,6 +27,10 @@ type MergedPREvent struct {
 	IssueNumber     uint64 `json:"issueNumber"`     // GitHub issue number
 	PRNumber        uint64 `json:"prNumber"`        // GitHub PR number
 	DeveloperGitHub string `json:"developerGitHub"` // GitHub login
+	// DeveloperWallet is the EVM address to receive the bounty payout.
+	// Populated by the backend from the developer's registered wallet address.
+	// Must be non-empty for the EVM write step to proceed.
+	DeveloperWallet string `json:"developerWallet"`
 }
 
 // Consensus-aggregated: all DON nodes must agree on the same event.
@@ -34,6 +38,9 @@ type MergedPREvent struct {
 type VerifiedMerge struct {
 	BountyID        string `consensus_aggregation:"mode" json:"bountyId"`
 	DeveloperGitHub string `consensus_aggregation:"mode" json:"developerGitHub"`
+	// DeveloperWallet must reach consensus across DON nodes before being used
+	// as the recipient in the releaseBounty() EVM write.
+	DeveloperWallet string `consensus_aggregation:"mode" json:"developerWallet"`
 }
 
 func InitWorkflow(config *Config, logger *slog.Logger, secretsProvider cre.SecretsProvider) (cre.Workflow[*Config], error) {
@@ -68,7 +75,18 @@ func onPRMergedWebhook(config *Config, runtime cre.Runtime, payload *http.Trigge
 
 	logger.Info("GitHub verification passed", "bountyId", verified.BountyID, "developer", verified.DeveloperGitHub)
 
-	// Confidential HTTP call to backend to execute Stripe Connect transfer.
+	// ── TODO (on-chain mode): EVM write via KeystoneForwarder ────────────────
+	// For on-chain mode add a CRE EVM write step here that calls:
+	//   MergeReward.releaseBounty(bountyId, developerWallet)
+	// This credits developerBalances[verified.DeveloperWallet] in the contract.
+	// The developer then calls withdraw() at their convenience.
+	//
+	// See: https://docs.chain.link/chainlink-runtime-environment
+	// ─────────────────────────────────────────────────────────────────────────
+
+	// Notify backend to record the payout (Stripe mode) or acknowledge the
+	// pending on-chain release (on-chain mode — backend returns 202
+	// onchain_release_required when Stripe is not configured).
 	payoutURL := fmt.Sprintf("%s/internal/payout", config.BackendURL)
 
 	_, err = http.SendRequest(
@@ -146,7 +164,14 @@ func verifyPRMergeWithGitHub(config *Config, runtime cre.Runtime, event *MergedP
 				return nil, fmt.Errorf("PR author mismatch: got %q, expected %q", pr.User.Login, event.DeveloperGitHub)
 			}
 
-			return &VerifiedMerge{BountyID: event.BountyID, DeveloperGitHub: event.DeveloperGitHub}, nil
+			if event.DeveloperWallet == "" {
+			return nil, fmt.Errorf("developerWallet is empty for bounty %s — developer must register an EVM address before payout", event.BountyID)
+		}
+		return &VerifiedMerge{
+			BountyID:        event.BountyID,
+			DeveloperGitHub: event.DeveloperGitHub,
+			DeveloperWallet: event.DeveloperWallet,
+		}, nil
 		},
 		cre.ConsensusAggregationFromTags[*VerifiedMerge](),
 	).Await()

@@ -62,6 +62,12 @@ func (h *Handler) Routes() http.Handler {
 	// Claim requires a valid GitHub session; the handler reads login from context.
 	mux.Handle("POST /bounties/claim",
 		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleClaimBounty)))
+	// Maintainer calls after createBounty() tx is confirmed on-chain → funded.
+	mux.Handle("POST /bounties/{id}/fund-onchain",
+		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleFundOnchain)))
+	// Developer calls after detecting DeveloperFunded/BountyReleased event → paid.
+	mux.Handle("POST /bounties/{id}/confirm-released",
+		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleConfirmReleased)))
 
 	// ── Developers ────────────────────────────────────────────────────────────
 	// Full profile (auth required): includes walletAddress, stripeOnboarded, paymentMode

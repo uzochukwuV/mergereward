@@ -14,6 +14,10 @@ type BountyStatus string
 
 const (
 	BountyStatusPendingPayment BountyStatus = "pending_payment"
+	// BountyStatusPendingOnchain: bounty record created (on-chain mode); waiting
+	// for the frontend to confirm the on-chain createBounty() tx completed.
+	// NOT eligible for the payout pipeline — must transition to Funded first.
+	BountyStatusPendingOnchain BountyStatus = "pending_onchain"
 	BountyStatusFunded         BountyStatus = "funded"
 	BountyStatusPaid           BountyStatus = "paid"
 )
