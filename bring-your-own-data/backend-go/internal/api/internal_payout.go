@@ -51,11 +51,11 @@ func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.Status != store.BountyStatusFunded {
-		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "not_funded"})
+		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "not_funded", PaymentMode: paymentMode()})
 		return
 	}
 	if b.MergedPR == nil {
-		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "not_merged"})
+		writeJSON(w, http.StatusConflict, internalPayoutResponse{Status: "not_merged", PaymentMode: paymentMode()})
 		return
 	}
 	if b.Payout != nil {
@@ -68,25 +68,22 @@ func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── On-chain path (Stripe not configured) ────────────────────────────────
-	// The CRE workflow calls `releaseBounty` directly on the smart contract.
-	// Funds accumulate in `developerBalances[developer]` inside the contract;
-	// the developer calls `withdraw()` at their convenience — one tx, any total.
+	// The actual payout is executed by the CRE KeystoneForwarder calling
+	// MergeReward.releaseBounty() on the smart contract — NOT by this endpoint.
+	// Funds accumulate in developerBalances[developer] inside the contract until
+	// the developer calls withdraw().
+	//
+	// Recording a payout here without evidence of the on-chain release would
+	// produce a "paid" DB record for a bounty that still holds its ETH.
+	// Instead we return onchain_release_required so the CRE workflow knows it
+	// must execute the EVM write. The frontend then calls
+	// POST /bounties/{id}/confirm-released after detecting the DeveloperFunded
+	// or BountyReleased contract event.
 	if !payments.ConnectEnabled() {
-		developer := b.MergedPR.Author
-		_ = h.store.RecordPayout(b.ID, store.Payout{
-			StripeTransferID: "", // no Stripe — on-chain balance held by contract
-			CreatedAt:        time.Now().UTC(),
+		writeJSON(w, http.StatusAccepted, internalPayoutResponse{
+			Status:      "onchain_release_required",
+			PaymentMode: "onchain",
 		})
-
-		h.hub.Broadcast(ws.Event{Type: "bounty.paid", Data: map[string]any{
-			"bountyId":    b.ID,
-			"developer":   developer,
-			"amountCents": b.AmountCents,
-			"currency":    b.Currency,
-			"paymentMode": "onchain",
-		}})
-
-		writeJSON(w, http.StatusOK, internalPayoutResponse{Status: "paid", PaymentMode: "onchain"})
 		return
 	}
 
@@ -118,7 +115,15 @@ func (h *Handler) handleInternalPayout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.store.RecordPayout(b.ID, store.Payout{StripeTransferID: transferID, CreatedAt: time.Now().UTC()})
+	if err := h.store.RecordPayout(b.ID, store.Payout{StripeTransferID: transferID, CreatedAt: time.Now().UTC()}); err != nil {
+		// Transfer succeeded on Stripe's side but DB write failed. Log and surface
+		// the error so the operator can reconcile; do not broadcast bounty.paid.
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":            "stripe transfer succeeded but failed to record payout: " + err.Error(),
+			"stripeTransferId": transferID,
+		})
+		return
+	}
 
 	h.hub.Broadcast(ws.Event{Type: "bounty.paid", Data: map[string]any{
 		"bountyId":         b.ID,

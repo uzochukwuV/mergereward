@@ -7,8 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"mergereward-backend/internal/auth"
 	"mergereward-backend/internal/payments"
 	"mergereward-backend/internal/store"
+	"mergereward-backend/internal/ws"
 )
 
 type createBountyRequest struct {
@@ -22,7 +24,7 @@ type createBountyRequest struct {
 
 type createBountyResponse struct {
 	BountyID      string `json:"bountyId"`
-	PaymentMode   string `json:"paymentMode"`             // "stripe" | "onchain"
+	PaymentMode   string `json:"paymentMode"`         // "stripe" | "onchain"
 	CheckoutURL   string `json:"checkoutUrl,omitempty"`
 	CheckoutID    string `json:"checkoutId,omitempty"`
 	PaymentStatus string `json:"paymentStatus"`
@@ -50,9 +52,6 @@ func (h *Handler) handleCreateBounty(w http.ResponseWriter, r *http.Request) {
 	h.store.CreateBounty(b)
 
 	// ── Stripe path (optional) ────────────────────────────────────────────────
-	// If Stripe is not configured, fall through to the on-chain path. This
-	// allows maintainers to fund bounties directly via the smart contract
-	// without needing to set up Stripe at all.
 	if payments.ConnectEnabled() {
 		if req.SuccessURL == "" || req.CancelURL == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "successUrl and cancelUrl are required for stripe payment"})
@@ -104,20 +103,158 @@ func (h *Handler) handleCreateBounty(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── On-chain path (Stripe not configured) ────────────────────────────────
-	// The bounty record is created in the DB as an off-chain index entry.
-	// The maintainer funds it directly on the smart contract. The CRE workflow
-	// verifies merges and triggers `releaseBounty` on-chain; developer funds
-	// accumulate in the contract until they call `withdraw()`.
+	// The bounty record is created with status pending_onchain. It stays there
+	// until the frontend confirms the on-chain createBounty() tx via
+	// POST /bounties/{id}/fund-onchain. Only after that transition to "funded"
+	// does the bounty become eligible for the payout pipeline.
 	//
-	// Mark the bounty as funded immediately — on-chain state is the source of
-	// truth; this status just enables PR-matching and pending-payout queries.
-	_ = h.store.SetBountyStatus(b.ID, store.BountyStatusFunded)
+	// We must NOT auto-mark as funded here: unfunded bounties would silently
+	// enter the payout pipeline and produce incorrect "paid" records in the DB.
+	if err := h.store.SetBountyStatus(b.ID, store.BountyStatusPendingOnchain); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to initialise bounty status: " + err.Error()})
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, &createBountyResponse{
 		BountyID:      b.ID,
 		PaymentMode:   "onchain",
-		PaymentStatus: string(store.BountyStatusFunded),
+		PaymentStatus: string(store.BountyStatusPendingOnchain),
 	})
+}
+
+// ── On-chain confirmation endpoints ─────────────────────────────────────────
+
+type onchainConfirmRequest struct {
+	TxHash string `json:"txHash"` // transaction hash for audit trail
+}
+
+// handleFundOnchain is called by the frontend after the maintainer's
+// createBounty() on-chain transaction is confirmed. Transitions the bounty from
+// pending_onchain → funded, making it eligible for the payout pipeline.
+//
+// Auth: any authenticated user (in practice the maintainer's browser).
+// The txHash is stored for audit but is not verified on-chain here.
+func (h *Handler) handleFundOnchain(w http.ResponseWriter, r *http.Request) {
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bounty id required"})
+		return
+	}
+
+	var req onchainConfirmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if req.TxHash == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txHash is required"})
+		return
+	}
+
+	b, ok := h.store.GetBounty(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bounty not found"})
+		return
+	}
+	if b.Status != store.BountyStatusPendingOnchain {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "bounty is not awaiting on-chain funding",
+			"status": string(b.Status),
+		})
+		return
+	}
+
+	if err := h.store.SetBountyStatus(id, store.BountyStatusFunded); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to mark bounty as funded: " + err.Error()})
+		return
+	}
+
+	h.hub.Broadcast(ws.Event{Type: "bounty.funded", Data: map[string]any{
+		"bountyId":    id,
+		"txHash":      req.TxHash,
+		"paymentMode": "onchain",
+	}})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "funded"})
+}
+
+// handleConfirmReleased is called by the frontend after it detects the
+// DeveloperFunded or BountyReleased event on-chain, confirming that CRE's
+// releaseBounty() call went through. Records the payout in the DB and
+// broadcasts the bounty.paid WebSocket event.
+//
+// Auth: any authenticated user (in practice the developer whose wallet balance grew).
+// The txHash is stored as the payment reference; on-chain re-verification is
+// out of scope for this handler (an indexer can be added later).
+func (h *Handler) handleConfirmReleased(w http.ResponseWriter, r *http.Request) {
+	claims := auth.ClaimsFromContext(r.Context())
+	if claims == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not authenticated"})
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bounty id required"})
+		return
+	}
+
+	var req onchainConfirmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if req.TxHash == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "txHash is required"})
+		return
+	}
+
+	b, ok := h.store.GetBounty(id)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "bounty not found"})
+		return
+	}
+	if b.Status != store.BountyStatusFunded {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error":  "bounty is not in funded state",
+			"status": string(b.Status),
+		})
+		return
+	}
+	if b.MergedPR == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no merged PR recorded for this bounty"})
+		return
+	}
+	if b.Payout != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "already_confirmed"})
+		return
+	}
+
+	// Store the on-chain tx hash as the payment reference.
+	if err := h.store.RecordPayout(id, store.Payout{
+		StripeTransferID: req.TxHash,
+		CreatedAt:        time.Now().UTC(),
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to record payout: " + err.Error()})
+		return
+	}
+
+	h.hub.Broadcast(ws.Event{Type: "bounty.paid", Data: map[string]any{
+		"bountyId":    id,
+		"txHash":      req.TxHash,
+		"developer":   b.MergedPR.Author,
+		"amountCents": b.AmountCents,
+		"currency":    b.Currency,
+		"paymentMode": "onchain",
+	}})
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "confirmed"})
 }
 
 // handleGetBounty returns a single bounty by ID.
