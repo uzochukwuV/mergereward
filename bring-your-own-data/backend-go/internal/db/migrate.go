@@ -23,9 +23,13 @@ CREATE TABLE IF NOT EXISTS developers (
     github_login       TEXT        PRIMARY KEY,
     stripe_account_id  TEXT,
     stripe_onboarded   BOOLEAN     NOT NULL DEFAULT FALSE,
+    wallet_address     TEXT,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_onboarded_at  TIMESTAMPTZ
 );
+
+-- idempotent backfill: add column if it was created without wallet_address
+ALTER TABLE developers ADD COLUMN IF NOT EXISTS wallet_address TEXT;
 
 CREATE TABLE IF NOT EXISTS merged_prs (
     bounty_id  TEXT        PRIMARY KEY REFERENCES bounties (id),

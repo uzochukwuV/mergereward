@@ -40,8 +40,13 @@ GitHub Webhook ──► Your Backend API
                     └────┬────┘
                95%       │      5%
                 ▼        │       ▼
-           Developer   (fee)  Protocol
-            wallet            wallet
+       developerBalances  │   Protocol
+       [developer] +=     │    wallet
+       payout             │   (immediate)
+                ▼
+       Developer calls withdraw()
+       when ready — any amount,
+       one tx, one gas fee
 ```
 
 ---
@@ -49,19 +54,27 @@ GitHub Webhook ──► Your Backend API
 ## File Structure
 
 ```
-mergereward/
-├── contracts/
+bring-your-own-data/
+├── contracts/                           ← Foundry project (single source of truth)
+│   ├── foundry.toml
+│   ├── remappings.txt
 │   ├── src/
-│   │   ├── MergeReward.sol          ← Main escrow + release contract
-│   │   └── util/Workflow.sol        ← CRE helper (from bring-your-own-data template)
+│   │   ├── MergeReward.sol              ← Main escrow + payout contract
+│   │   └── util/
+│   │       └── Workflow.sol             ← CRE KeystoneForwarder helper
 │   └── scripts/
-│       └── DeployMergeReward.s.sol  ← Foundry deploy script
+│       └── DeployMergeReward.s.sol      ← Foundry deploy script
 │
-└── workflow-go/
-    ├── workflow.go                  ← CRE workflow (Go SDK)
-    ├── config.json                  ← Non-secret config (contract address, chain)
-    ├── secrets.yaml                 ← Secret values (NEVER commit — TEE only)
-    └── workflow.yaml                ← CRE CLI settings
+├── files/                               ← Workflow config & documentation
+│   ├── README.md                        ← This file
+│   ├── FRONTEND.md                      ← Frontend implementation guide
+│   ├── workflow.go                      ← CRE workflow (Go SDK)
+│   ├── workflow.yaml                    ← CRE CLI settings
+│   ├── config.json                      ← Non-secret config (contract address, chain)
+│   └── secrets.yaml                     ← Secret values (NEVER commit — TEE only)
+│
+└── backend-go/                          ← Go API server
+    └── ...
 ```
 
 ---
@@ -126,12 +139,12 @@ These are encrypted and available only inside the CRE TEE.
 
 ## Deploy Checklist
 
-1. `cp contracts/src/util/Workflow.sol` from the bring-your-own-data template
-2. Edit `config.json` → set your deployed contract address + chain
-3. Edit `secrets.yaml` → add your GitHub token
-4. Run `forge script scripts/DeployMergeReward.s.sol --broadcast`
+1. `cd contracts && forge install` to fetch dependencies
+2. Edit `files/config.json` → set your deployed contract address + chain
+3. Edit `files/secrets.yaml` → add your GitHub token (never commit this)
+4. Run `forge script scripts/DeployMergeReward.s.sol --rpc-url $RPC_URL --broadcast --verify`
 5. Register workflow with CRE CLI: `cre workflow deploy --target staging-settings`
-6. Copy the CRE HTTP trigger URL → register it in your backend as the GitHub webhook destination
+6. Copy the CRE HTTP trigger URL → register it in your backend as `CRE_TRIGGER_URL`
 
 ---
 

@@ -8,7 +8,8 @@ pragma solidity 0.8.26;
  *  1. Maintainer calls `createBounty(repoId, issueNumber)` + sends ETH
  *  2. Developer submits a PR, gets merged on GitHub
  *  3. CRE workflow detects the merge, calls `releaseBounty` via KeystoneForwarder
- *  4. Developer receives ETH automatically — no manual payout
+ *  4. Earned ETH is credited to the developer's in-contract balance (not sent immediately)
+ *  5. Developer calls `withdraw()` whenever they want — accumulate first, pay gas once
  *
  * ⚠️  DEMO CONTRACT — NOT AUDITED — DO NOT USE IN PRODUCTION
  */
@@ -31,6 +32,9 @@ contract MergeReward {
 
     /// bountyId = keccak256(repoId, issueNumber)
     mapping(bytes32 => Bounty) public bounties;
+
+    /// Accumulated earnings per developer address — withdraw at any time
+    mapping(address => uint256) public developerBalances;
 
     /// Only the CRE KeystoneForwarder may call `releaseBounty`
     address public immutable keystoneForwarder;
@@ -77,6 +81,21 @@ contract MergeReward {
         uint256 amount
     );
 
+    /// Emitted when a developer's in-contract balance grows after a bounty release
+    event DeveloperFunded(
+        address indexed developer,
+        bytes32 indexed bountyId,
+        uint256 amount,
+        uint256 newBalance
+    );
+
+    /// Emitted when a developer withdraws their accumulated balance
+    event DeveloperWithdrew(
+        address indexed developer,
+        address indexed recipient,
+        uint256 amount
+    );
+
     // ─── Errors ───────────────────────────────────────────────────────────────
 
     error BountyAlreadyExists();
@@ -87,6 +106,8 @@ contract MergeReward {
     error AlreadyClaimed();
     error NoClaimer();
     error ZeroAmount();
+    error NothingToWithdraw();
+    error WithdrawFailed();
 
     // ─── Constructor ──────────────────────────────────────────────────────────
 
@@ -173,9 +194,9 @@ contract MergeReward {
     function refundExpiredBounty(string calldata repoId, uint256 issueNumber) external {
         bytes32 id = _bountyId(repoId, issueNumber);
         Bounty storage b = bounties[id];
-        if (b.maintainer == address(0))   revert BountyNotFound();
-        if (b.released || b.refunded)     revert BountyAlreadySettled();
-        if (msg.sender != b.maintainer)   revert Unauthorized();
+        if (b.maintainer == address(0))    revert BountyNotFound();
+        if (b.released || b.refunded)      revert BountyAlreadySettled();
+        if (msg.sender != b.maintainer)    revert Unauthorized();
         if (block.timestamp < b.expiresAt) revert NotExpiredYet();
 
         uint256 amt = b.amount;
@@ -191,12 +212,14 @@ contract MergeReward {
     // ─── CRE-Only Release ─────────────────────────────────────────────────────
 
     /**
-     * @notice Release bounty to the developer. ONLY callable by the CRE
-     *         KeystoneForwarder after verifying the GitHub PR was merged.
+     * @notice Release bounty to the developer's in-contract balance.
+     *         ONLY callable by the CRE KeystoneForwarder after verifying the
+     *         GitHub PR was merged.
      *
-     * @dev The CRE workflow passes the bountyId, developer address, and
-     *      a report signed by the DON. The forwarder verifies the report
-     *      and calls this function.
+     * @dev Instead of sending ETH immediately, earnings are accumulated in
+     *      `developerBalances[developer]`. The developer calls `withdraw()` when
+     *      ready — once, for any accumulated amount — avoiding repeated small
+     *      transfers and high per-transaction fees.
      *
      * @param bountyId   keccak256(repoId, issueNumber) — matches what the workflow computed
      * @param developer  Address of the developer who opened the merged PR
@@ -221,13 +244,49 @@ contract MergeReward {
         b.released = true;
         b.claimer  = developer; // normalise in case it was unset
 
-        (bool ok1,) = developer.call{value: payout}("");
-        require(ok1, "payout failed");
+        // Credit earnings to the developer's in-contract balance.
+        // Developer calls withdraw() when they choose — one tx, one fee.
+        developerBalances[developer] += payout;
 
-        (bool ok2,) = feeRecipient.call{value: fee}("");
-        require(ok2, "fee transfer failed");
+        // Fee goes directly to the protocol fee recipient
+        (bool ok,) = feeRecipient.call{value: fee}("");
+        require(ok, "fee transfer failed");
 
         emit BountyReleased(bountyId, developer, payout, fee);
+        emit DeveloperFunded(developer, bountyId, payout, developerBalances[developer]);
+    }
+
+    // ─── Developer Withdrawal ─────────────────────────────────────────────────
+
+    /**
+     * @notice Withdraw all accumulated earnings to the caller's address.
+     *         Call this once you've earned enough to make the gas cost worthwhile.
+     */
+    function withdraw() external {
+        _withdraw(payable(msg.sender));
+    }
+
+    /**
+     * @notice Withdraw all accumulated earnings to a specific recipient address.
+     *         Useful for sending directly to a cold wallet or exchange deposit.
+     * @param recipient  Address that will receive the ETH
+     */
+    function withdrawTo(address payable recipient) external {
+        if (recipient == address(0)) revert Unauthorized();
+        _withdraw(recipient);
+    }
+
+    function _withdraw(address payable recipient) internal {
+        uint256 amount = developerBalances[msg.sender];
+        if (amount == 0) revert NothingToWithdraw();
+
+        // Zero out before transfer (reentrancy protection)
+        developerBalances[msg.sender] = 0;
+
+        (bool ok,) = recipient.call{value: amount}("");
+        if (!ok) revert WithdrawFailed();
+
+        emit DeveloperWithdrew(msg.sender, recipient, amount);
     }
 
     // ─── Views ────────────────────────────────────────────────────────────────
@@ -242,6 +301,14 @@ contract MergeReward {
         external view returns (Bounty memory)
     {
         return bounties[bountyId];
+    }
+
+    /**
+     * @notice Returns the accumulated (not-yet-withdrawn) earnings for a developer.
+     * @param developer  The developer's wallet address
+     */
+    function getBalance(address developer) external view returns (uint256) {
+        return developerBalances[developer];
     }
 
     // ─── Internals ────────────────────────────────────────────────────────────

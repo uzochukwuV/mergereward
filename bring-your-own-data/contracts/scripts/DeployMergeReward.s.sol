@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {MergeReward} from "../src/MergeReward.sol";
 
 /**
- * Deploy MergeReward to Sepolia (or any supported chain).
+ * Deploy MergeReward to Sepolia or Base Sepolia.
  *
  * Usage:
  *   forge script scripts/DeployMergeReward.s.sol \
@@ -14,7 +14,7 @@ import {MergeReward} from "../src/MergeReward.sol";
  *     --verify \
  *     -vvvv
  *
- * Environment variables required:
+ * Required env vars:
  *   PRIVATE_KEY      — deployer private key
  *   FEE_RECIPIENT    — address that receives the 5% protocol fee
  */

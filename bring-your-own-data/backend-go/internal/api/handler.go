@@ -56,12 +56,21 @@ func (h *Handler) Routes() http.Handler {
 
 	// ── Bounties ──────────────────────────────────────────────────────────────
 	mux.HandleFunc("POST /bounties", h.handleCreateBounty)
+	mux.HandleFunc("GET /bounties", h.handleListBounties)
+	mux.HandleFunc("GET /bounties/{id}", h.handleGetBounty)
 
 	// Claim requires a valid GitHub session; the handler reads login from context.
 	mux.Handle("POST /bounties/claim",
 		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleClaimBounty)))
 
 	// ── Developers ────────────────────────────────────────────────────────────
+	// Full profile (auth required): includes walletAddress, stripeOnboarded, paymentMode
+	mux.Handle("GET /developers/me",
+		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleGetMe)))
+	// Save EVM wallet address for on-chain payout display (auth required)
+	mux.Handle("PATCH /developers/me/wallet",
+		auth.RequireAuth(h.sessionSecret)(http.HandlerFunc(h.handleSetWallet)))
+	// Stripe Connect onboarding (optional — only useful when Stripe is configured)
 	mux.HandleFunc("POST /developers/stripe/onboard", h.handleDeveloperStripeOnboard)
 
 	// ── Internal (CRE-only, bearer-token protected) ────────────────────────────
