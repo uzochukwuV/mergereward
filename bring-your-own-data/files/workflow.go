@@ -29,8 +29,11 @@ type MergedPREvent struct {
 	DeveloperGitHub string `json:"developerGitHub"` // GitHub login
 	// DeveloperWallet is the EVM address to receive the bounty payout.
 	// Populated by the backend from the developer's registered wallet address.
-	// Must be non-empty for the EVM write step to proceed.
+	// Only required when PaymentMode == "onchain".
 	DeveloperWallet string `json:"developerWallet"`
+	// PaymentMode is "stripe" or "onchain". Determines whether the CRE workflow
+	// should execute an EVM write (onchain) or just notify the backend (stripe).
+	PaymentMode string `json:"paymentMode"`
 }
 
 // Consensus-aggregated: all DON nodes must agree on the same event.
@@ -41,6 +44,8 @@ type VerifiedMerge struct {
 	// DeveloperWallet must reach consensus across DON nodes before being used
 	// as the recipient in the releaseBounty() EVM write.
 	DeveloperWallet string `consensus_aggregation:"mode" json:"developerWallet"`
+	// PaymentMode is passed through for routing in the workflow handler.
+	PaymentMode string `consensus_aggregation:"mode" json:"paymentMode"`
 }
 
 func InitWorkflow(config *Config, logger *slog.Logger, secretsProvider cre.SecretsProvider) (cre.Workflow[*Config], error) {
@@ -164,13 +169,15 @@ func verifyPRMergeWithGitHub(config *Config, runtime cre.Runtime, event *MergedP
 				return nil, fmt.Errorf("PR author mismatch: got %q, expected %q", pr.User.Login, event.DeveloperGitHub)
 			}
 
-			if event.DeveloperWallet == "" {
-			return nil, fmt.Errorf("developerWallet is empty for bounty %s — developer must register an EVM address before payout", event.BountyID)
+			// Wallet is only required for the on-chain EVM write path.
+		if event.PaymentMode == "onchain" && event.DeveloperWallet == "" {
+			return nil, fmt.Errorf("developerWallet is empty for bounty %s — developer must register an EVM address before on-chain payout", event.BountyID)
 		}
 		return &VerifiedMerge{
 			BountyID:        event.BountyID,
 			DeveloperGitHub: event.DeveloperGitHub,
 			DeveloperWallet: event.DeveloperWallet,
+			PaymentMode:     event.PaymentMode,
 		}, nil
 		},
 		cre.ConsensusAggregationFromTags[*VerifiedMerge](),

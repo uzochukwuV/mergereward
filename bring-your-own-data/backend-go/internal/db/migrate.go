@@ -12,9 +12,15 @@ CREATE TABLE IF NOT EXISTS bounties (
     currency             TEXT        NOT NULL DEFAULT 'usd',
     stripe_checkout_id   TEXT,
     status               TEXT        NOT NULL DEFAULT 'pending_payment',
+    creator_github_login TEXT,
     claimer_github_login TEXT,
+    fund_tx_hash         TEXT,
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- idempotent backfill: add columns if created without them
+ALTER TABLE bounties ADD COLUMN IF NOT EXISTS creator_github_login TEXT;
+ALTER TABLE bounties ADD COLUMN IF NOT EXISTS fund_tx_hash TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS bounties_repo_issue
     ON bounties (repo_id, issue_number);
